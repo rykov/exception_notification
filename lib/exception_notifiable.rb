@@ -23,6 +23,9 @@ require 'ipaddr'
 module ExceptionNotifiable
   def self.included(target)
     target.extend(ClassMethods)
+    target.class_eval do
+      alias_method_chain :rescue_action_in_public, :notification
+    end  
   end
 
   module ClassMethods
@@ -57,43 +60,24 @@ module ExceptionNotifiable
   end
 
   private
-
     def local_request?
       remote = IPAddr.new(request.remote_ip)
       !self.class.local_addresses.detect { |addr| addr.include?(remote) }.nil?
     end
 
-    def render_404
-      respond_to do |type|
-        type.html { render :file => "#{RAILS_ROOT}/public/404.html", :status => "404 Not Found" }
-        type.all  { render :nothing => true, :status => "404 Not Found" }
-      end
-    end
+    def rescue_action_in_public_with_notification(exception)
+      rescue_action_in_public_without_notification(exception)
 
-    def render_500
-      respond_to do |type|
-        type.html { render :file => "#{RAILS_ROOT}/public/500.html", :status => "500 Error" }
-        type.all  { render :nothing => true, :status => "500 Error" }
-      end
-    end
+      unless self.class.exceptions_to_treat_as_404.include?(exception.class)
+        deliverer = self.class.exception_data
+        data = case deliverer
+          when nil then {}
+          when Symbol then send(deliverer)
+          when Proc then deliverer.call(self)
+        end
 
-    def rescue_action_in_public(exception)
-      case exception
-        when *self.class.exceptions_to_treat_as_404
-          render_404
-
-        else          
-          render_500
-
-          deliverer = self.class.exception_data
-          data = case deliverer
-            when nil then {}
-            when Symbol then send(deliverer)
-            when Proc then deliverer.call(self)
-          end
-
-          ExceptionNotifier.deliver_exception_notification(exception, self,
-            request, data)
+        ExceptionNotifier.deliver_exception_notification(exception, self,
+          request, data)
       end
     end
 end
